@@ -76,6 +76,28 @@ from corpus_core.reranker import Reranker, RerankerConfig
   also run combined with arxiv-radar-mcp on one Qwen instance to
   fit a 12 GB GPU.
 
+## Status
+
+**v0.1.0, in production** as of 2026-05-09 → 10. Both downstream
+projects (arxiv-radar-mcp and lab-corpus-mcp) install corpus-core
+editable from the sibling repo. The combined `exopoiesis/lab-corpus-gpu`
+image on gomer holds:
+
+* 34,627 abstract embeddings (Qwen3-Embedding-4B native 2560 dims,
+  L2-normalized) over 5 arxiv-radar fork sources.
+* 466 fulltext chunks across 51 fetched arxiv papers + 54 chunks
+  across 2 MinerU-parsed lab PDFs.
+* All in one `corpus_core.embeddings.EmbeddingIndex` cache layout,
+  encoded by a single shared Encoder instance.
+
+Build-time `audit_image.py` in both downstream projects checks the
+no-duplicate-distribution invariant — pip never ends up with two
+copies of any package, including torch.
+
+Phase 3 extraction is complete; PyPI publication of `corpus-core`
+deferred until the API stabilises through real-world ingest of more
+than the current 53 papers.
+
 ## Tests
 
 `pytest -q` from the repo root. The standalone test suite covers
