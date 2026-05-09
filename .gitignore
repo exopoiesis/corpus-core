@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Local Claude Code settings (machine-specific)
+.claude/
+
+# Local throw-away scripts
+tmp/
+
+# OS junk
+.DS_Store
+Thumbs.db
