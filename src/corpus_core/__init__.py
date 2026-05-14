@@ -22,6 +22,11 @@ Public API surface (re-exports for convenience):
     make_method_dispatcher, build_mcp_app, serve_stdio,
     serve_streamable_http, Dispatcher, BackgroundTaskFactory
                                             — generic MCP server scaffold
+    fetch_url, fetch_arxiv_pdf, Throttle,
+    get_arxiv_throttle, request_with_retry,
+    FetchResult, DEFAULT_USER_AGENT,
+    ARXIV_RATE_LIMIT_S                      — HTTP fetch primitives
+                                              (shared throttle for arxiv.org)
 
 Submodule access (`from corpus_core.embeddings import ...`) is also
 fully supported — the explicit re-exports here are convenience only.
@@ -44,6 +49,16 @@ from corpus_core.embeddings import (
     Encoder,
     passage_prefix,
     query_prefix,
+)
+from corpus_core.http_fetch import (
+    ARXIV_RATE_LIMIT_S,
+    DEFAULT_USER_AGENT,
+    FetchResult,
+    Throttle,
+    fetch_arxiv_pdf,
+    fetch_url,
+    get_arxiv_throttle,
+    request_with_retry,
 )
 from corpus_core.jobs import (
     Job,
@@ -86,6 +101,15 @@ __all__ = [
     "search_paper_text",
     "search_paper_semantic",
     "similar_to_paper",
+    # http fetch
+    "ARXIV_RATE_LIMIT_S",
+    "DEFAULT_USER_AGENT",
+    "FetchResult",
+    "Throttle",
+    "fetch_arxiv_pdf",
+    "fetch_url",
+    "get_arxiv_throttle",
+    "request_with_retry",
     # jobs
     "Job",
     "JobError",
