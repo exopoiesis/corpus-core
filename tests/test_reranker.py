@@ -124,3 +124,20 @@ def test_rerank_returns_float_scores_not_numpy():
     out = r.rerank("q", [_StubPaper("a", "t")], k=1)
     _, score = out[0]
     assert type(score) is float
+
+
+# ----- Reranker.unload() ---------------------------------------------------
+
+def test_reranker_unload_drops_model():
+    r = Reranker(RerankerConfig())
+    r._model = _StubCrossEncoder(scores=[0.0])
+    assert r.unload() is True
+    assert r._model is None
+
+
+def test_reranker_unload_idempotent():
+    r = Reranker(RerankerConfig())
+    assert r.unload() is False  # never loaded
+    r._model = _StubCrossEncoder(scores=[0.0])
+    assert r.unload() is True
+    assert r.unload() is False  # already released

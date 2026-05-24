@@ -10,13 +10,13 @@ What's inside:
 
 | Module | Role |
 |--------|------|
-| `embeddings.py` | `Encoder` — lazy SentenceTransformer wrapper with model-aware query/passage prefixes, bf16 on CUDA, matryoshka truncation. `EmbeddingIndex` — mmap'd float32 matrix + `row_for` mapping + metadata, atomic save/load. |
+| `embeddings.py` | `Encoder` — lazy SentenceTransformer wrapper with model-aware query/passage prefixes, bf16 on CUDA, matryoshka truncation. `Encoder.unload()` drops the in-process model + frees CUDA VRAM (idempotent; next encode lazily re-loads). `EmbeddingIndex` — mmap'd float32 matrix + `row_for` mapping + metadata, atomic save/load. |
 | `chunker.py` | `chunk_markdown(text, max_tokens) → list[Chunk]`. Section-aware split + paragraph overlap; rough but fast token estimator. |
 | `corpus_index.py` | Chunk-level corpus search. `reindex(parse_dir, encoder, *, incremental)` — incremental encode + atomic swap. `search_paper_text` / `search_paper_semantic` / `similar_to_paper`. `is_junk_section` filter. |
 | `search.py` | Abstract-level search primitives over `EmbeddingIndex`: `search_text` / `search_semantic` / `similar_to`. Paper-shaped records via `Protocol` — no host-project dep. |
 | `jobs.py` | `JobRegistry` — ThreadPoolExecutor + persistent `jobs/<id>.json`. Disk-truth fallback in `get()` so a stuck-running cell doesn't lie about completed jobs. |
 | `proxy.py` | Local stdio↔remote-HTTP bridge. `run_proxy(target, port, ssh_binary)` opens an SSH tunnel and forwards MCP traffic; `_bridge_loop` reconnects on backend disconnect. |
-| `reranker.py` | `Reranker` — lazy CrossEncoder wrapper for hybrid-search re-scoring. Local `RerankerConfig` dataclass. |
+| `reranker.py` | `Reranker` — lazy CrossEncoder wrapper for hybrid-search re-scoring. `Reranker.unload()` mirrors `Encoder.unload()` for symmetric VRAM control after a batch. Local `RerankerConfig` dataclass. |
 | `mcp_scaffold.py` | Generic MCP server scaffold: `make_method_dispatcher(handler, allowlist) → Dispatcher`, `build_mcp_app(server_name, tool_specs, dispatcher) → mcp.server.Server`, `serve_stdio` / `serve_streamable_http` transports with optional `BackgroundTaskFactory` list. |
 | `http_fetch.py` | `fetch_url(url, dest_path) → FetchResult` — throttled GET with 429/503 retry + `Retry-After` + atomic file write. `fetch_arxiv_pdf(arxiv_id, dest_dir)` convenience wrapper. **`get_arxiv_throttle()` singleton** — process-wide 1 req / 3 sec budget shared by arxiv-radar's HTML/LaTeX fetcher and lab-corpus's `ingest_url` / `ingest_arxiv_pdf`, so the combined image never double-spams arxiv.org. |
 
@@ -95,7 +95,7 @@ from corpus_core.http_fetch import fetch_url, get_arxiv_throttle
 
 ## Status
 
-**v0.1.0, in production** as of 2026-05-09 → 10. Both downstream
+**v0.2.0, in production** as of 2026-05-24. Both downstream
 projects (arxiv-radar-mcp and lab-corpus-mcp) install corpus-core
 editable from the sibling repo. The combined `exopoiesis/lab-corpus-gpu`
 image on gomer holds:
@@ -117,7 +117,16 @@ arxiv-radar-mcp's U14: `http_fetch.py` extracts the throttled GET +
 `fulltext.py`. Both servers now share the singleton arxiv throttle —
 arxiv-radar uses it for HTML/LaTeX, lab-corpus uses it for
 `ingest_url` / `ingest_arxiv_pdf` PDF downloads. Same module-global
-lock across the whole combined image. 114 corpus-core tests green.
+lock across the whole combined image.
+
+**VRAM unload added (2026-05-24, v0.2.0).** `Encoder.unload()` and
+`Reranker.unload()` drop the in-process model and free CUDA VRAM via
+`torch.cuda.empty_cache()` + `gc.collect()`. Both are idempotent and
+guarded by the existing model-load lock so concurrent encodes either
+complete first or re-load on next call. Downstream projects call
+`Encoder.unload()` after heavy one-shot work (reindex, refresh, bulk
+ingest) so a shared GPU host can use the freed VRAM for unrelated
+compute. 119 corpus-core tests green.
 
 Phase 3 extraction is complete; PyPI publication of `corpus-core`
 deferred until the API stabilises through real-world ingest of more

@@ -185,3 +185,58 @@ def test_embedding_index_load_roundtrip(tmp_path):
 def test_embedding_index_load_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         EmbeddingIndex.load(tmp_path / "nope")
+
+
+# ----- Encoder.unload() — VRAM release after heavy work --------------------
+
+def test_encoder_unload_drops_model(embeddings_config):
+    """unload() releases _model and the next encode_* call re-loads lazily."""
+    enc = Encoder(_CfgWrapper(embeddings_config))
+    fake = _FakeST()
+    _patch(enc, fake)
+
+    assert enc._model is fake
+    released = enc.unload()
+    assert released is True
+    assert enc._model is None
+
+
+def test_encoder_unload_idempotent(embeddings_config):
+    """Calling unload() twice (or before any load) is a no-op the second time."""
+    enc = Encoder(_CfgWrapper(embeddings_config))
+    # Never loaded — first call returns False.
+    assert enc.unload() is False
+
+    # Now load, unload, then re-unload.
+    _patch(enc, _FakeST())
+    assert enc.unload() is True
+    assert enc.unload() is False
+
+
+def test_encoder_unload_then_re_encode_triggers_reload(embeddings_config, monkeypatch):
+    """After unload(), encode_query() must hit the load path again.
+
+    We patch `_ensure_loaded` to count invocations and verify it fires
+    on the next encode (so the lazy-load path is actually re-entered
+    after unload, not silently skipped).
+    """
+    enc = Encoder(_CfgWrapper(embeddings_config))
+
+    load_calls = {"n": 0}
+
+    def fake_ensure_loaded(self=enc):
+        load_calls["n"] += 1
+        self._model = _FakeST()
+
+    monkeypatch.setattr(enc, "_ensure_loaded", fake_ensure_loaded)
+
+    enc.encode_query("first")
+    assert load_calls["n"] == 1
+    assert enc._model is not None
+
+    # Unload — _model goes back to None, no further load yet.
+    enc.unload()
+    assert enc._model is None
+
+    enc.encode_query("second")
+    assert load_calls["n"] == 2  # re-loaded after unload

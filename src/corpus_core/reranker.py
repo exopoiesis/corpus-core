@@ -57,6 +57,48 @@ class Reranker:
             LOG.info(f"loading cross-encoder {self.model_name}...")
             self._model = CrossEncoder(self.model_name)
 
+    def unload(self) -> bool:
+        """Drop the underlying CrossEncoder + free GPU/host memory.
+
+        Idempotent — returns True if a model was released, False if
+        nothing was loaded. The next `rerank` call lazily re-loads.
+
+        Mirrors `corpus_core.embeddings.Encoder.unload()` so callers
+        that hold both can release them together after a heavy pass.
+        """
+        import gc
+
+        if self._model is None:
+            return False
+        model = self._model
+        self._model = None
+        try:
+            import torch
+            if torch.cuda.is_available():
+                try:
+                    # CrossEncoder wraps a HF model under `.model`.
+                    inner = getattr(model, "model", None)
+                    if inner is not None:
+                        inner.to("cpu")
+                except Exception as e:  # noqa: BLE001
+                    LOG.debug(f"unload: cross-encoder.to('cpu') ignored: {e}")
+        except ImportError:
+            pass
+
+        del model
+        gc.collect()
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except ImportError:
+            pass
+
+        LOG.info(f"unloaded cross-encoder {self.model_name}")
+        return True
+
     def rerank(
         self, query: str, candidates: list[_RerankablePaper], k: int,
     ) -> list[tuple[_RerankablePaper, float]]:

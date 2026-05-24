@@ -221,6 +221,56 @@ class Encoder:
             # consistent state.
             self._model = model
 
+    def unload(self) -> bool:
+        """Drop the underlying SentenceTransformer + free GPU/host memory.
+
+        Idempotent — calling on an already-unloaded encoder is a no-op.
+        Returns True if a model was actually released, False if nothing
+        was loaded. The next `encode_*` call lazily re-loads.
+
+        Use after heavy one-shot work (reindex, bulk ingest) when the
+        host's GPU is also used for unrelated jobs — Qwen3-Embedding-4B
+        in bf16 takes ~7-8 GB on the device and that VRAM otherwise
+        stays pinned for the server's lifetime.
+
+        Concurrency: takes the same lock as `_ensure_loaded` so a
+        parallel encode either runs to completion before the unload or
+        triggers a re-load after. Don't call from inside an active
+        `encode_*` (would deadlock).
+        """
+        import gc
+
+        with self._model_lock:
+            if self._model is None:
+                return False
+            model = self._model
+            self._model = None
+            try:
+                # Move to CPU first so the CUDA allocator can actually
+                # release the VRAM blocks on the next empty_cache().
+                import torch
+                if torch.cuda.is_available():
+                    try:
+                        model.to("cpu")
+                    except Exception as e:  # noqa: BLE001
+                        LOG.debug(f"unload: model.to('cpu') ignored: {e}")
+            except ImportError:
+                torch = None  # type: ignore[assignment]
+
+            del model
+            gc.collect()
+
+            try:
+                import torch  # re-import in case the first one failed
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+            except ImportError:
+                pass
+
+            LOG.info(f"unloaded bi-encoder {self.model_name}")
+            return True
+
     def encode_query(self, text: str, max_seq_length: int = 512) -> np.ndarray:
         """Encode a single query. L2-normalized, with model-specific prefix.
 
