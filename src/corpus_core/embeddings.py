@@ -190,6 +190,22 @@ class Encoder:
         # speed by 3-50× depending on bucket).
         self._model_lock = threading.Lock()
 
+        # Idle-unload timer. Explicit unload() is wired only to job
+        # completion (reindex / bulk ingest); a plain search loads the
+        # model and would otherwise pin ~7-8 GB of VRAM for the server's
+        # whole lifetime. Re-arming this timer on every encode drops the
+        # model after `idle_unload_s` seconds of no encodes, so on a host
+        # that shares the GPU with DFT/MLIP the VRAM frees itself when the
+        # corpus is quiet, while back-to-back queries in one session stay
+        # warm (no per-query ~20 s cold reload). 0/None disables it.
+        self._idle_lock = threading.Lock()
+        self._idle_timer = None  # type: ignore[var-annotated]
+        try:
+            self._idle_unload_s = float(
+                getattr(config.embeddings, "idle_unload_s", 0) or 0)
+        except (TypeError, ValueError):
+            self._idle_unload_s = 0.0
+
     @property
     def model_name(self) -> str:
         return self.config.embeddings.model
@@ -240,6 +256,11 @@ class Encoder:
         """
         import gc
 
+        # Cancel any pending idle timer first — whoever called unload()
+        # (explicit job-completion path, or the timer itself) takes
+        # ownership; a stale timer would just re-fire a harmless no-op.
+        self._cancel_idle_timer()
+
         with self._model_lock:
             if self._model is None:
                 return False
@@ -271,6 +292,41 @@ class Encoder:
             LOG.info(f"unloaded bi-encoder {self.model_name}")
             return True
 
+    # -- idle-unload timer ---------------------------------------------------
+
+    def _cancel_idle_timer(self) -> None:
+        with self._idle_lock:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+
+    def _touch_idle(self) -> None:
+        """Re-arm the idle-unload countdown. Called after every encode.
+
+        Each call cancels the prior timer and starts a fresh one, so the
+        model is dropped only after a full `idle_unload_s` window with no
+        encode activity. No-op when idle-unload is disabled (<= 0).
+        """
+        if self._idle_unload_s <= 0:
+            return
+        import threading
+        with self._idle_lock:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+            t = threading.Timer(self._idle_unload_s, self._idle_unload_fire)
+            t.daemon = True  # never block interpreter shutdown
+            self._idle_timer = t
+            t.start()
+
+    def _idle_unload_fire(self) -> None:
+        try:
+            if self.unload():
+                LOG.info(
+                    f"idle-unload: released bi-encoder {self.model_name} "
+                    f"after {self._idle_unload_s:.0f}s of inactivity")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(f"idle-unload failed (model stays resident): {e}")
+
     def encode_query(self, text: str, max_seq_length: int = 512) -> np.ndarray:
         """Encode a single query. L2-normalized, with model-specific prefix.
 
@@ -284,6 +340,7 @@ class Encoder:
             [prefixed],
             normalize_embeddings=True,
         ).astype(np.float32)[0]
+        self._touch_idle()
         return _maybe_truncate(vec, self.config.embeddings.target_dim)
 
     def encode_passages(
@@ -320,6 +377,7 @@ class Encoder:
             convert_to_numpy=True,
             normalize_embeddings=True,
         ).astype(np.float32, copy=False)
+        self._touch_idle()
         return _maybe_truncate(matrix, self.config.embeddings.target_dim)
 
 
