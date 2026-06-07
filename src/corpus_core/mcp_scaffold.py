@@ -136,12 +136,18 @@ async def serve_streamable_http(
     host: str,
     port: int,
     background_tasks: Iterable[BackgroundTaskFactory] = (),
+    extra_routes: "Iterable[Any]" = (),
 ) -> None:
     """Async streamable-HTTP MCP loop (protocol 2025-03-26+).
 
     One process serves many sessions; ideal for a GPU host where the
     encoder loads once. Bind `host="127.0.0.1"` in production — the
     perimeter is an SSH tunnel, NOT this server.
+
+    `extra_routes` accepts additional Starlette ``Route`` / ``Mount``
+    objects mounted alongside ``/mcp`` on the same port and uvicorn
+    instance. Useful for sidecar endpoints (e.g. ``/upload`` for file
+    ingestion) that share the server process without a second port.
     """
     import uvicorn
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -158,7 +164,7 @@ async def serve_streamable_http(
     async def _handle(scope, receive, send):
         await session_manager.handle_request(scope, receive, send)
 
-    starlette_app = Starlette(routes=[Mount("/mcp", app=_handle)])
+    starlette_app = Starlette(routes=[Mount("/mcp", app=_handle), *extra_routes])
 
     bg = _spawn_background(background_tasks)
     try:

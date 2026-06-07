@@ -1,6 +1,6 @@
 [project]
 name = "corpus-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Shared infrastructure for corpus indexing + MCP search (used by arxiv-radar-mcp + lab-corpus-mcp)."
 readme = "README.md"
 requires-python = ">=3.10"
