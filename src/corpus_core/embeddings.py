@@ -188,7 +188,13 @@ class Encoder:
         # GPU memory (16 GB for Qwen3-4B bf16 — exhausts a 12 GB card,
         # forcing slow CPU/host-memory spillover that drops every encode
         # speed by 3-50× depending on bucket).
-        self._model_lock = threading.Lock()
+        # RLock (reentrant): encode_* hold this lock around the actual
+        # `.encode()` AND call _ensure_loaded() (which re-acquires it) inside —
+        # needs reentrancy on the same thread. Cross-thread (idle-unload timer)
+        # it still serializes: unload() blocks until an in-flight encode releases,
+        # so the model can't be moved to CPU mid-forward-pass (was: device-mismatch
+        # cpu/cuda crash during long reindex encodes >idle_unload_s).
+        self._model_lock = threading.RLock()
 
         # Idle-unload timer. Explicit unload() is wired only to job
         # completion (reindex / bulk ingest); a plain search loads the
@@ -333,14 +339,16 @@ class Encoder:
         Same `max_seq_length=512` default as encode_passages — see that
         method's docstring for why this is required for Qwen3.
         """
-        self._ensure_loaded()
-        self._model.max_seq_length = max_seq_length
-        prefixed = query_prefix(self.model_name) + text
-        vec = self._model.encode(  # type: ignore[union-attr]
-            [prefixed],
-            normalize_embeddings=True,
-        ).astype(np.float32)[0]
-        self._touch_idle()
+        with self._model_lock:               # hold through encode: idle-unload can't interleave
+            self._cancel_idle_timer()        # no pending timer fires mid-encode
+            self._ensure_loaded()
+            self._model.max_seq_length = max_seq_length
+            prefixed = query_prefix(self.model_name) + text
+            vec = self._model.encode(  # type: ignore[union-attr]
+                [prefixed],
+                normalize_embeddings=True,
+            ).astype(np.float32)[0]
+        self._touch_idle()                   # re-arm only after encode completes
         return _maybe_truncate(vec, self.config.embeddings.target_dim)
 
     def encode_passages(
@@ -363,21 +371,23 @@ class Encoder:
 
         `batch_size` overrides config.embeddings.batch_size for this call.
         """
-        self._ensure_loaded()
-        # Set the per-call seq window (no-op when already at this length).
-        self._model.max_seq_length = max_seq_length
+        with self._model_lock:               # hold through encode: idle-unload/unload() can't
+            self._cancel_idle_timer()        # interleave and move model to CPU mid-forward-pass
+            self._ensure_loaded()
+            # Set the per-call seq window (no-op when already at this length).
+            self._model.max_seq_length = max_seq_length
 
-        prefix = passage_prefix(self.model_name)
-        prepared = [prefix + t for t in texts] if prefix else texts
-        bs = batch_size if batch_size is not None else self.config.embeddings.batch_size
-        matrix = self._model.encode(  # type: ignore[union-attr]
-            prepared,
-            batch_size=bs,
-            show_progress_bar=show_progress,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        ).astype(np.float32, copy=False)
-        self._touch_idle()
+            prefix = passage_prefix(self.model_name)
+            prepared = [prefix + t for t in texts] if prefix else texts
+            bs = batch_size if batch_size is not None else self.config.embeddings.batch_size
+            matrix = self._model.encode(  # type: ignore[union-attr]
+                prepared,
+                batch_size=bs,
+                show_progress_bar=show_progress,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            ).astype(np.float32, copy=False)
+        self._touch_idle()                   # re-arm only after encode completes
         return _maybe_truncate(matrix, self.config.embeddings.target_dim)
 
 
