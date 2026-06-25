@@ -54,6 +54,23 @@ from corpus_core.reranker import Reranker, RerankerConfig
 from corpus_core.http_fetch import fetch_url, get_arxiv_throttle
 ```
 
+## Process-level singleton contract
+
+**One cache_dir = one writing process.**
+`corpus_core.jobs.JobRegistry` serialises reindex attempts within a process via
+`acquire_reindex_lock()`. Running two separate processes against the same
+`cache_dir` at the same time is not supported and will produce a corrupted
+index. The lockfile (`<cache_dir>/fulltext/.reindex.lock`) records `pid` +
+`hostname` + `start_time` so a crashed owner's lock can be recovered on the
+next start (same-host pid dead = stale; foreign host = operator must remove
+manually).
+
+`corpus_core.embeddings.Encoder` and `corpus_core.http_fetch.get_arxiv_throttle()`
+are process-level singletons -- construct one instance and inject it into both
+arxiv-radar-mcp and lab-corpus-mcp via the `encoder=` / shared-throttle
+parameters. Never instantiate two Encoders in the same process against the
+same GPU (two Qwen3-4B bf16 models = ~16 GB, exhausts a 12 GB card).
+
 ## Invariants downstream packages must honour
 
 * **Embedding cache layout**:
@@ -86,12 +103,21 @@ from corpus_core.http_fetch import fetch_url, get_arxiv_throttle
 
 ## Used by
 
-* [arxiv-radar-mcp](https://github.com/exopoiesis/arxiv-radar-mcp) —
+* [arxiv-radar-mcp](https://github.com/exopoiesis/arxiv-radar-mcp) --
   arxiv-only topical radar over the `daily-arxiv-*` fork family.
-* [lab-corpus-mcp](https://github.com/exopoiesis/lab-corpus-mcp) —
+* [lab-corpus-mcp](https://github.com/exopoiesis/lab-corpus-mcp) --
   private PDF / DOCX / PPTX / image corpus parsed via MinerU; can
   also run combined with arxiv-radar-mcp on one Qwen instance to
   fit a 12 GB GPU.
+
+> **Note: shared GPU hosting requires the combined-supervisor (DECISIONS-136).**
+> arxiv-radar-mcp and lab-corpus-mcp each load Qwen3-Embedding-4B (~8 GB
+> bf16). Running them as two independent standalone backends on the same GPU
+> is **not supported** -- two copies total ~16 GB, causing OOM on 12 GB cards.
+> The only supported topology for shared GPU hosting is the
+> **combined-supervisor** in `lab-corpus-mcp`, which constructs one `Encoder`
+> and injects it into both servers via the `encoder=` parameter on
+> `RadarServer.__init__` and the equivalent in `lab-corpus-mcp`.
 
 ## Status
 

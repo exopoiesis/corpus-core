@@ -11,7 +11,7 @@ break this out into its own repo + PyPI package.
 Public API surface (re-exports for convenience):
     Encoder, EmbeddingIndex                — embedding model + index
     chunk_markdown, Chunk, FULLTEXT_MAX_SEQ_LENGTH
-                                            — markdown → chunk splitter
+                                            — markdown -> chunk splitter
     search_text, search_semantic, similar_to
                                             — abstract-level search primitives
     search_paper_text, search_paper_semantic, similar_to_paper
@@ -28,9 +28,24 @@ Public API surface (re-exports for convenience):
     ARXIV_RATE_LIMIT_S                      — HTTP fetch primitives
                                               (shared throttle for arxiv.org)
 
+PDF parsing (optional extra corpus-core[pdf]):
+    corpus_core.pdf                         — PdfParseResult, parse_pdf,
+                                              unload_pdf_models,
+                                              is_pdf_parser_available,
+                                              looks_like_pdf_stub
+    (corpus_core.pdf is NOT re-exported at top level; import it as
+     `import corpus_core.pdf` or `from corpus_core import pdf` to keep
+     the module-level import of corpus_core cheap on hosts without MinerU.)
+
 Submodule access (`from corpus_core.embeddings import ...`) is also
-fully supported — the explicit re-exports here are convenience only.
+fully supported -- the explicit re-exports here are convenience only.
 """
+from corpus_core.archive import (
+    PaperFiles,
+    build_paper_archive,
+    is_safe_paper_id,
+    make_download_handler,
+)
 from corpus_core.chunker import (
     Chunk,
     chunk_markdown,
@@ -122,4 +137,9 @@ __all__ = [
     "make_method_dispatcher",
     "serve_stdio",
     "serve_streamable_http",
+    # archive (download side-channel)
+    "PaperFiles",
+    "build_paper_archive",
+    "is_safe_paper_id",
+    "make_download_handler",
 ]

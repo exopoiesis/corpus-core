@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -142,6 +143,9 @@ class EmbeddingIndex:
         # Strip core fields; everything else is metadata (forward-compat).
         core = {"row_for", "model", "dims", "n"}
         metadata = {k: v for k, v in idx.items() if k not in core}
+        # chunker_version lives in metadata but expose at top level for
+        # fast mismatch checks in _classify_papers.
+        chunker_version: str | None = (metadata or {}).get("chunker_version")
         return cls(
             matrix=matrix,
             row_for=idx["row_for"],
@@ -149,6 +153,61 @@ class EmbeddingIndex:
             dims=idx["dims"],
             metadata=metadata or None,
         )
+
+    @classmethod
+    def save(
+        cls,
+        cache_dir: Path,
+        matrix: "np.ndarray",
+        row_for: "dict[str, int]",
+        model: str,
+        metadata: "dict | None" = None,
+    ) -> None:
+        """Atomically write embeddings.npy + index.json to cache_dir.
+
+        Both files are written to .tmp siblings first; then .npy is renamed,
+        then .json is renamed.  This ordering means that during a crash:
+          * If only .npy.tmp exists  -> neither file was replaced; old pair valid.
+          * If .npy was replaced but .json.tmp not yet renamed -> .json still
+            points at the old matrix (stale but consistent).
+          * If .npy AND .json were replaced -> new pair valid.
+        The one edge case (npy replaced, json.tmp rename fails) leaves the new
+        matrix with the old index.  `load()` will fail a coherence check
+        (n_rows != matrix.shape[0]) or simply produce wrong results.  Full
+        rebuild on next start recovers.  This is identical to the ordering
+        used by _persist_index in corpus_index.py and better than no atomicity.
+
+        `metadata` is merged into the JSON payload alongside `model`/`dims`/`n`;
+        use it to carry `chunker_version`, `max_seq_length`, `chunks`, etc.
+        """
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        npy_final = cache_dir / "embeddings.npy"
+        npy_tmp   = cache_dir / "embeddings.npy.tmp"
+        json_final = cache_dir / "index.json"
+        json_tmp   = cache_dir / "index.json.tmp"
+
+        # Write .npy to temp first.
+        with open(npy_tmp, "wb") as f:
+            np.save(f, matrix)
+
+        # Build JSON payload; metadata values are merged at top level.
+        payload: dict = {
+            "model": model,
+            "dims": int(matrix.shape[1]),
+            "n": int(matrix.shape[0]),
+            "row_for": row_for,
+        }
+        if metadata:
+            payload.update(metadata)
+
+        json_tmp.write_text(
+            json.dumps(payload, indent=1), encoding="utf-8",
+        )
+
+        # Atomic renames: npy first, then json.
+        os.replace(npy_tmp, npy_final)
+        os.replace(json_tmp, json_final)
 
     def vector(self, arxiv_id: str) -> np.ndarray | None:
         i = self.row_for.get(arxiv_id)

@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pdf = [
+    "mineru[core]>=2.5",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

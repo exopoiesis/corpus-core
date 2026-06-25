@@ -1,14 +1,19 @@
 """Search primitives: text, semantic, hybrid (RRF), similar-to.
 
+Abstract-level search over Paper-shaped records (title + abstract).
+Primary consumer: arxiv-radar-mcp.
+lab-corpus-mcp uses chunk-level search in corpus_index (search_paper_text,
+search_paper_semantic, similar_to_paper) instead of this module.
+
 All functions take an iterable of Paper-shaped records (already loaded
 in memory) and return a list of (paper, score) tuples sorted desc by
 score, top-k.
 
-The `Paper` type is duck-typed via `_PaperLike` Protocol — any object
+The `Paper` type is duck-typed via `_PaperLike` Protocol -- any object
 with `.arxiv_id`, `.title`, `.abstract`, `.tags`, `.domain` works, so
 corpus_core stays decoupled from any one host project's record schema.
 
-Filtering by domain / tag is applied BEFORE ranking — no point ranking
+Filtering by domain / tag is applied BEFORE ranking -- no point ranking
 records the caller doesn't want.
 """
 from __future__ import annotations

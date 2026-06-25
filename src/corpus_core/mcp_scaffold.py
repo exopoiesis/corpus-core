@@ -72,9 +72,17 @@ def build_mcp_app(
     server_name: str,
     tool_specs: list[dict[str, Any]],
     dispatcher: Dispatcher,
+    instructions: str | None = None,
 ):
     """Construct an `mcp.server.Server` with `tool_specs` as the live
     catalogue and `dispatcher` as the call router.
+
+    `instructions` is server-level metadata returned in the MCP
+    `initialize` result — the place to document things clients can't learn
+    from the tool catalogue, e.g. the binary HTTP side-channels
+    (`GET /download`, `POST /upload`) that JSON-RPC can't carry. Compatible
+    clients surface it to the model, so it travels with the server for
+    every user, not just one local memory.
 
     Imported lazily so unit-tests don't pull in the MCP SDK just to
     inspect the catalogue.
@@ -82,7 +90,7 @@ def build_mcp_app(
     from mcp.server import Server
     from mcp.types import TextContent, Tool
 
-    app: Server = Server(server_name)
+    app: Server = Server(server_name, instructions=instructions)
 
     @app.list_tools()
     async def _list_tools() -> list[Tool]:
@@ -90,7 +98,21 @@ def build_mcp_app(
 
     @app.call_tool()
     async def _call_tool(name: str, arguments: dict[str, Any] | None) -> list[TextContent]:
-        result = dispatcher(name, arguments)
+        # Run the synchronous dispatcher in a thread so it does not block the
+        # event loop.  Both the stdio and streamable-HTTP transports are async;
+        # a long-running synchronous tool (embedding search, chunker rebuild)
+        # would otherwise stall all other async tasks for its duration.
+        #
+        # Any uncaught exception from the dispatcher (or the tool method it
+        # calls) is caught here and returned as a structured error response so
+        # the MCP session stays alive.  make_method_dispatcher already handles
+        # TypeError (bad args) and unknown-tool; this layer catches everything
+        # else (RuntimeError, ValueError, IO errors, ...).
+        try:
+            result = await asyncio.to_thread(dispatcher, name, arguments)
+        except Exception as e:  # noqa: BLE001
+            LOG.exception(f"_call_tool: unhandled exception in tool {name!r}")
+            result = {"error": f"{type(e).__name__}: {e}"}
         text = json.dumps(result, indent=1, ensure_ascii=False, default=str)
         return [TextContent(type="text", text=text)]
 
@@ -110,6 +132,7 @@ async def serve_stdio(
     tool_specs: list[dict[str, Any]],
     dispatcher: Dispatcher,
     background_tasks: Iterable[BackgroundTaskFactory] = (),
+    instructions: str | None = None,
 ) -> None:
     """Async stdio MCP loop. Spawns each `background_tasks` coroutine on
     entry and cancels them when the transport returns.
@@ -118,6 +141,7 @@ async def serve_stdio(
 
     app = build_mcp_app(
         server_name=server_name, tool_specs=tool_specs, dispatcher=dispatcher,
+        instructions=instructions,
     )
     bg = _spawn_background(background_tasks)
     try:
@@ -136,12 +160,19 @@ async def serve_streamable_http(
     host: str,
     port: int,
     background_tasks: Iterable[BackgroundTaskFactory] = (),
+    extra_routes: Iterable[Any] = (),
+    instructions: str | None = None,
 ) -> None:
     """Async streamable-HTTP MCP loop (protocol 2025-03-26+).
 
     One process serves many sessions; ideal for a GPU host where the
     encoder loads once. Bind `host="127.0.0.1"` in production — the
     perimeter is an SSH tunnel, NOT this server.
+
+    `extra_routes` mounts downstream Starlette `Route`/`Mount` objects
+    alongside `/mcp` on the same port — used for binary side-channels that
+    JSON-RPC can't carry (lab-corpus `POST /upload`, arxiv-radar
+    `GET /download`). They share the perimeter (SSH tunnel) with `/mcp`.
     """
     import uvicorn
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -150,6 +181,7 @@ async def serve_streamable_http(
 
     app = build_mcp_app(
         server_name=server_name, tool_specs=tool_specs, dispatcher=dispatcher,
+        instructions=instructions,
     )
     session_manager = StreamableHTTPSessionManager(
         app=app, json_response=True, stateless=False,
@@ -158,7 +190,9 @@ async def serve_streamable_http(
     async def _handle(scope, receive, send):
         await session_manager.handle_request(scope, receive, send)
 
-    starlette_app = Starlette(routes=[Mount("/mcp", app=_handle)])
+    starlette_app = Starlette(
+        routes=[Mount("/mcp", app=_handle), *extra_routes],
+    )
 
     bg = _spawn_background(background_tasks)
     try:

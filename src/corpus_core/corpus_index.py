@@ -39,7 +39,7 @@ from typing import Iterable
 
 import numpy as np
 
-from corpus_core.chunker import Chunk, chunk_markdown
+from corpus_core.chunker import CHUNKER_VERSION, Chunk, chunk_markdown
 from corpus_core.embeddings import EmbeddingIndex, Encoder
 
 LOG = logging.getLogger(__name__)
@@ -157,64 +157,57 @@ def _reindex_full(
     LOG.info(f"reindex: {len(paper_chunks)} papers, "
              f"{sum(len(p.chunks) for p in paper_chunks)} chunks total")
 
-    prior_max_seq = _get_max_seq_length(encoder)
-    prior_batch = encoder.config.embeddings.batch_size
+    all_chunks: list[Chunk] = []
+    chunk_meta: list[dict] = []
+    row_for: dict[str, int] = {}
 
-    try:
-        all_chunks: list[Chunk] = []
-        chunk_meta: list[dict] = []
-        row_for: dict[str, int] = {}
+    for pc in paper_chunks:
+        row_for[pc.arxiv_id] = len(all_chunks)
+        for c in pc.chunks:
+            all_chunks.append(c)
+            chunk_meta.append({
+                "arxiv_id": pc.arxiv_id,
+                "section": c.section,
+                "chunk_idx": c.chunk_idx,
+                "n_chars": c.n_chars,
+                "n_tokens_est": c.n_tokens_est,
+            })
 
-        for pc in paper_chunks:
-            row_for[pc.arxiv_id] = len(all_chunks)
-            for c in pc.chunks:
-                all_chunks.append(c)
-                chunk_meta.append({
-                    "arxiv_id": pc.arxiv_id,
-                    "section": c.section,
-                    "chunk_idx": c.chunk_idx,
-                    "n_chars": c.n_chars,
-                    "n_tokens_est": c.n_tokens_est,
-                })
+    t0 = time.time()
+    matrix, bucket_stats = _encode_bucketed(encoder, all_chunks)
+    encode_seconds = time.time() - t0
 
-        t0 = time.time()
-        matrix, bucket_stats = _encode_bucketed(encoder, all_chunks)
-        encode_seconds = time.time() - t0
+    for bucket_label, bucket_n, bucket_seconds in bucket_stats:
+        if bucket_n:
+            LOG.info(f"  bucket {bucket_label}: {bucket_n} chunks "
+                     f"in {bucket_seconds:.1f}s "
+                     f"({bucket_seconds / bucket_n:.2f}s/chunk)")
 
-        for bucket_label, bucket_n, bucket_seconds in bucket_stats:
-            if bucket_n:
-                LOG.info(f"  bucket {bucket_label}: {bucket_n} chunks "
-                         f"in {bucket_seconds:.1f}s "
-                         f"({bucket_seconds / bucket_n:.2f}s/chunk)")
+    if progress_cb is not None:
+        progress_cb(len(paper_chunks), len(paper_chunks))
 
-        if progress_cb is not None:
-            progress_cb(len(paper_chunks), len(paper_chunks))
+    _persist_index(
+        fulltext_dir, matrix, row_for, chunk_meta,
+        model_name=encoder.model_name,
+        n_papers=len(paper_chunks),
+        encode_seconds=encode_seconds,
+    )
+    _stamp_meta(sources_dir, paper_chunks)
 
-        _persist_index(
-            fulltext_dir, matrix, row_for, chunk_meta,
-            model_name=encoder.model_name,
-            n_papers=len(paper_chunks),
-            encode_seconds=encode_seconds,
-        )
-        _stamp_meta(sources_dir, paper_chunks)
+    LOG.info(f"reindex done: {matrix.shape[0]} chunks, "
+             f"{matrix.nbytes / 1024 / 1024:.1f} MB in {encode_seconds:.1f}s")
 
-        LOG.info(f"reindex done: {matrix.shape[0]} chunks → "
-                 f"{matrix.nbytes / 1024 / 1024:.1f} MB in {encode_seconds:.1f}s")
-
-        return EmbeddingIndex(
-            matrix=matrix,
-            row_for=row_for,
-            model_name=encoder.model_name,
-            dims=int(matrix.shape[1]),
-            metadata={
-                "max_seq_length": FULLTEXT_MAX_SEQ_LENGTH,
-                "chunks": chunk_meta,
-                "n_papers": len(paper_chunks),
-            },
-        )
-    finally:
-        _set_max_seq_length(encoder, prior_max_seq)
-        encoder.config.embeddings.batch_size = prior_batch
+    return EmbeddingIndex(
+        matrix=matrix,
+        row_for=row_for,
+        model_name=encoder.model_name,
+        dims=int(matrix.shape[1]),
+        metadata={
+            "max_seq_length": FULLTEXT_MAX_SEQ_LENGTH,
+            "chunks": chunk_meta,
+            "n_papers": len(paper_chunks),
+        },
+    )
 
 
 def _reindex_incremental(
@@ -282,20 +275,14 @@ def _reindex_incremental(
 
     encode_seconds = 0.0
     if flat_chunks:
-        prior_max_seq = _get_max_seq_length(encoder)
-        prior_batch = encoder.config.embeddings.batch_size
-        try:
-            t0 = time.time()
-            new_matrix, bucket_stats = _encode_bucketed(encoder, flat_chunks)
-            encode_seconds = time.time() - t0
-            for bucket_label, bucket_n, bucket_seconds in bucket_stats:
-                if bucket_n:
-                    LOG.info(f"  bucket {bucket_label}: {bucket_n} chunks "
-                             f"in {bucket_seconds:.1f}s "
-                             f"({bucket_seconds / bucket_n:.2f}s/chunk)")
-        finally:
-            _set_max_seq_length(encoder, prior_max_seq)
-            encoder.config.embeddings.batch_size = prior_batch
+        t0 = time.time()
+        new_matrix, bucket_stats = _encode_bucketed(encoder, flat_chunks)
+        encode_seconds = time.time() - t0
+        for bucket_label, bucket_n, bucket_seconds in bucket_stats:
+            if bucket_n:
+                LOG.info(f"  bucket {bucket_label}: {bucket_n} chunks "
+                         f"in {bucket_seconds:.1f}s "
+                         f"({bucket_seconds / bucket_n:.2f}s/chunk)")
 
         if kept_matrix.shape[0] == 0:
             # Started from a fully-rebuilt set — adopt new_matrix's dim.
@@ -384,8 +371,19 @@ def _classify_papers(
             ),
         )
 
+    indexed_chunker_version = existing_payload.get("chunker_version")
+    if indexed_chunker_version != CHUNKER_VERSION:
+        return _ReindexPlan(
+            full_rebuild_reason=(
+                f"chunker_version mismatch (index was built with "
+                f"{indexed_chunker_version!r}, current is {CHUNKER_VERSION!r})"
+            ),
+        )
+
     indexed_ids = {c["arxiv_id"] for c in existing_payload.get("chunks", [])}
-    source_ids = {p.stem for p in sources_dir.glob("*.md")}
+    # Snapshot at classification time: concurrent fetch_papers adding a file
+    # after this point will be a new_id in the *next* incremental pass.
+    source_ids = {p.stem for p in sorted(sources_dir.glob("*.md"))}
 
     new_ids = sorted(source_ids - indexed_ids)
     deleted_ids = sorted(indexed_ids - source_ids)
@@ -469,29 +467,28 @@ def _persist_index(
     n_papers: int,
     encode_seconds: float,
 ) -> None:
-    """Atomically write embeddings.npy + index.json (.tmp → rename)."""
-    fulltext_dir.mkdir(parents=True, exist_ok=True)
+    """Atomically write embeddings.npy + index.json via EmbeddingIndex.save.
 
-    npy_final = fulltext_dir / "embeddings.npy"
-    npy_tmp = fulltext_dir / "embeddings.npy.tmp"
-    with open(npy_tmp, "wb") as f:
-        np.save(f, matrix)
-    npy_tmp.replace(npy_final)
-
-    index_payload = {
-        "model": model_name,
-        "dims": int(matrix.shape[1]),
-        "n": int(matrix.shape[0]),
-        "row_for": row_for,
-        "max_seq_length": FULLTEXT_MAX_SEQ_LENGTH,
-        "chunks": chunk_meta,
-        "n_papers": n_papers,
-        "encode_seconds": round(encode_seconds, 2),
-    }
-    json_final = fulltext_dir / "index.json"
-    json_tmp = fulltext_dir / "index.json.tmp"
-    json_tmp.write_text(json.dumps(index_payload, indent=1), encoding="utf-8")
-    json_tmp.replace(json_final)
+    Delegates the atomic .tmp-rename logic to EmbeddingIndex.save so there
+    is a single writer implementation. All fulltext-specific fields
+    (chunker_version, max_seq_length, chunks, n_papers, encode_seconds)
+    are passed as `metadata` and merged into the JSON payload alongside the
+    core keys (model, dims, n, row_for) -- preserving the same index.json
+    layout as before.
+    """
+    EmbeddingIndex.save(
+        fulltext_dir,
+        matrix,
+        row_for,
+        model=model_name,
+        metadata={
+            "chunker_version": CHUNKER_VERSION,
+            "max_seq_length": FULLTEXT_MAX_SEQ_LENGTH,
+            "chunks": chunk_meta,
+            "n_papers": n_papers,
+            "encode_seconds": round(encode_seconds, 2),
+        },
+    )
 
 
 def _stamp_meta(sources_dir: Path, paper_chunks: list[_PaperChunks]) -> None:
@@ -519,9 +516,19 @@ def _stamp_meta(sources_dir: Path, paper_chunks: list[_PaperChunks]) -> None:
 
 
 def _collect_chunks(sources_dir: Path) -> list[_PaperChunks]:
-    """Walk sources_dir, run chunker on every .md file (used by full reindex)."""
+    """Walk sources_dir, run chunker on every .md file (used by full reindex).
+
+    Takes a snapshot of the .md listing at call time and iterates over that
+    fixed list, so a concurrent fetch_papers job adding files mid-reindex
+    does not cause the newly-appearing files to be processed with a partially-
+    built matrix.  Papers that appear after the snapshot are simply absent
+    from this index build and will be picked up by the next incremental pass.
+    """
+    # Snapshot under a single glob call -- atomically enumerates what exists
+    # at this instant. The list is sorted for deterministic row ordering.
+    snapshot = sorted(sources_dir.glob("*.md"))
     out: list[_PaperChunks] = []
-    for md_path in sorted(sources_dir.glob("*.md")):
+    for md_path in snapshot:
         arxiv_id = md_path.stem
         chunks = _chunk_one(md_path, arxiv_id)
         if chunks is not None:
@@ -551,25 +558,6 @@ def _chunk_one(md_path: Path, arxiv_id: str) -> list[Chunk] | None:
         LOG.warning(f"[reindex] skip {arxiv_id}: chunker produced nothing")
         return None
     return chunks
-
-
-def _set_max_seq_length(encoder: Encoder, target: int) -> int:
-    """Set the underlying SentenceTransformer's max_seq_length, return prior.
-
-    Encoder lazy-loads — to keep things simple we ensure the model is loaded
-    here so the attribute exists.
-    """
-    encoder._ensure_loaded()  # noqa: SLF001 — internal API
-    prior = getattr(encoder._model, "max_seq_length", -1)
-    encoder._model.max_seq_length = target
-    return prior
-
-
-def _get_max_seq_length(encoder: Encoder) -> int:
-    """Read current max_seq_length without forcing a load if not yet loaded."""
-    if encoder._model is None:  # noqa: SLF001
-        return -1
-    return getattr(encoder._model, "max_seq_length", -1)
 
 
 def _encode_bucketed(
@@ -865,12 +853,29 @@ def similar_to_paper(
     return out
 
 
-def load_chunk_texts(fulltext_dir: Path, index: EmbeddingIndex) -> list[str]:
+def load_chunk_texts(
+    fulltext_dir: Path,
+    index: EmbeddingIndex,
+    stats: "dict | None" = None,
+) -> list[str]:
     """Re-derive chunk texts from cached source markdowns + chunker.
 
     The index doesn't carry chunk text bodies (would inflate index.json
-    by 100×); we re-chunk on demand. Cheap because chunker is O(N) regex
+    by 100x); we re-chunk on demand. Cheap because chunker is O(N) regex
     + a few string concat passes, milliseconds per paper.
+
+    Parameters
+    ----------
+    fulltext_dir:
+        Directory that contains the ``sources/`` sub-directory.
+    index:
+        The loaded fulltext EmbeddingIndex whose chunk metadata drives
+        row assignment.
+    stats:
+        Optional dict. When provided, stale paper ids are collected into
+        ``stats["stale_papers"]`` (list[str]) so callers can distinguish
+        "no text because stale" from "not relevant". Does not affect the
+        return value or error behaviour.
     """
     if index.metadata is None or "chunks" not in index.metadata:
         return []
@@ -884,6 +889,7 @@ def load_chunk_texts(fulltext_dir: Path, index: EmbeddingIndex) -> list[str]:
     # Re-chunk each source and emit texts in the order matching index rows.
     sources_dir = fulltext_dir / "sources"
     text_for_row: list[str | None] = [None] * len(chunks_meta)
+    stale_ids: list[str] = []
 
     for arxiv_id, paper_meta in by_id.items():
         md_path = sources_dir / f"{arxiv_id}.md"
@@ -893,11 +899,24 @@ def load_chunk_texts(fulltext_dir: Path, index: EmbeddingIndex) -> list[str]:
             continue
         rebuilt = chunk_markdown(text, max_tokens=FULLTEXT_MAX_SEQ_LENGTH)
         # Find the index range for this paper in chunk_meta order.
-        # We rely on chunker being deterministic — same input produces same
+        # We rely on chunker being deterministic -- same input produces same
         # ordered chunks in the same order it did during reindex.
         rows_for_paper = [i for i, m in enumerate(chunks_meta)
                           if m["arxiv_id"] == arxiv_id]
+        if len(rebuilt) != len(rows_for_paper):
+            LOG.error(
+                f"[load_chunk_texts] {arxiv_id}: index expects "
+                f"{len(rows_for_paper)} chunks but chunker produced "
+                f"{len(rebuilt)} -- paper is stale, trigger reindex. "
+                f"Leaving rows as empty placeholder."
+            )
+            stale_ids.append(arxiv_id)
+            # Leave those rows as None -> will become "" via the final comprehension.
+            continue
         for row_i, chunk in zip(rows_for_paper, rebuilt):
             text_for_row[row_i] = chunk.text
+
+    if stats is not None:
+        stats["stale_papers"] = stale_ids
 
     return [t or "" for t in text_for_row]

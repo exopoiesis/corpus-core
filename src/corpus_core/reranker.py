@@ -1,12 +1,18 @@
 """Cross-encoder reranker.
 
-Cross-encoders score (query, passage) pairs jointly — they're slower than
-bi-encoders (no caching, must re-run per pair) but the precision boost
-over dense retrieval is large (≈ +5–15 nDCG@10 in published benchmarks).
+EXPERIMENTAL / not wired into any tool / unsupported.
 
-We use them in `search_hybrid` as a final pass: pull top-K from RRF,
+Cross-encoders score (query, passage) pairs jointly -- they're slower than
+bi-encoders (no caching, must re-run per pair) but the precision boost
+over dense retrieval is large (approximately +5-15 nDCG@10 in published
+benchmarks).
+
+Intended for `search_hybrid` as a final pass: pull top-K from RRF,
 rerank, return top-k. Lazy-loaded so unit tests and the --build-cache
 path don't pay the model-download cost.
+
+This module is retained for tests and future wiring; it is not called by
+any active MCP tool in arxiv-radar-mcp or lab-corpus-mcp.
 """
 from __future__ import annotations
 

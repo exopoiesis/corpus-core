@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 import threading
 import time
 import uuid
@@ -196,11 +198,20 @@ class JobRegistry:
     # ----- reindex lockfile ------------------------------------------------
 
     def acquire_reindex_lock(self) -> bool:
-        """Atomic create — returns True if we got the lock, False if held."""
+        """Atomic create -- returns True if we got the lock, False if held.
+
+        The lockfile carries real process identity (os.getpid() + hostname +
+        start_time) so _reload_persisted can decide whether the previous owner
+        is still alive before unconditionally deleting it.
+        """
         self._reindex_lock_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = self._reindex_lock_path.open("x")
-            fd.write(f"pid={threading.get_ident()} at={_utcnow_iso()}\n")
+            fd.write(
+                f"pid={os.getpid()}\n"
+                f"hostname={socket.gethostname()}\n"
+                f"start_time={_utcnow_iso()}\n"
+            )
             fd.close()
             return True
         except FileExistsError:
@@ -256,12 +267,70 @@ class JobRegistry:
             except TypeError:
                 continue
 
-        # Drop any stale lockfile from a previous run.
-        if self._reindex_lock_path.exists():
+        # On restart, try to clean up a stale reindex lockfile.
+        # Only remove it when we can confirm the previous owner is dead.
+        self._maybe_clear_stale_lock()
+
+    def _maybe_clear_stale_lock(self) -> None:
+        """Remove the reindex lockfile only when the previous owner is provably dead.
+
+        Decision matrix:
+        - hostname matches AND pid is dead  -> stale, remove (orphan recovery).
+        - hostname matches AND pid is alive -> real owner, do NOT remove.
+        - hostname does NOT match           -> foreign host, cannot check pid;
+          conservatively leave the lock and log a WARNING.
+        - lock file missing or unparseable  -> nothing to do.
+        """
+        if not self._reindex_lock_path.exists():
+            return
+
+        info = _parse_lock_file(self._reindex_lock_path)
+        if info is None:
+            # Unparseable old-format lock (e.g. "stale" or "pid=<thread_id>").
+            # Treat as stale and remove so the server can acquire the lock.
+            LOG.info("reindex lock: unparseable format, removing as stale")
             try:
-                self._reindex_lock_path.unlink()
-            except OSError:
-                pass
+                self._reindex_lock_path.unlink(missing_ok=True)
+            except OSError as e:
+                LOG.warning(f"reindex lock: could not remove unparseable lock: {e}")
+            return
+
+        lock_host = info.get("hostname", "")
+        my_host = socket.gethostname()
+
+        if lock_host != my_host:
+            # Foreign-host lock -- we cannot check the pid.
+            LOG.warning(
+                f"reindex lock owned by foreign host {lock_host!r} "
+                f"(this host is {my_host!r}); leaving lock in place. "
+                "Remove manually if the other host is gone."
+            )
+            return
+
+        # Same host -- check if the process is still alive.
+        try:
+            pid = int(info["pid"])
+        except (KeyError, ValueError):
+            LOG.info("reindex lock: could not parse pid, removing as stale")
+            try:
+                self._reindex_lock_path.unlink(missing_ok=True)
+            except OSError as e:
+                LOG.warning(f"reindex lock: could not remove: {e}")
+            return
+
+        if _pid_is_alive(pid):
+            LOG.warning(
+                f"reindex lock held by pid {pid} on this host -- "
+                "process appears alive; leaving lock in place."
+            )
+        else:
+            LOG.info(
+                f"reindex lock: previous owner pid {pid} is dead, removing stale lock"
+            )
+            try:
+                self._reindex_lock_path.unlink(missing_ok=True)
+            except OSError as e:
+                LOG.warning(f"reindex lock: could not remove stale lock: {e}")
 
     def shutdown(self) -> None:
         """Wait for in-flight jobs and stop the executor. Used in tests."""
@@ -295,3 +364,53 @@ class JobHandle:
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_lock_file(path: Path) -> "dict[str, str] | None":
+    """Parse the key=value lockfile written by acquire_reindex_lock.
+
+    Returns a dict of parsed fields, or None if the file is missing,
+    unreadable, or in an unrecognised format.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    result: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip()
+    # Must have at least pid and hostname to be a valid new-format lock.
+    if "pid" not in result or "hostname" not in result:
+        return None
+    return result
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return True if a process with `pid` exists on this host.
+
+    Uses os.kill(pid, 0): sends signal 0 (no actual signal), which succeeds
+    if the process exists and we have permission, or raises ProcessLookupError
+    (ESRCH) if it does not exist, or PermissionError (EPERM) if it exists but
+    we lack permission.
+
+    On Windows, os.kill(pid, 0) raises OSError with errno EINVAL for invalid
+    PIDs and succeeds (or raises PermissionError) for valid ones -- same
+    semantics as POSIX for our purposes.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        # ESRCH: no such process.
+        return False
+    except PermissionError:
+        # EPERM: process exists but we lack permission to signal it.
+        return True
+    except OSError:
+        # Catch-all for any other platform-specific error (e.g. EINVAL on Windows
+        # for truly invalid pid values). Treat as unknown -> conservatively alive.
+        return True

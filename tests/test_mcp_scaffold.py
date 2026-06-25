@@ -103,6 +103,22 @@ def test_build_mcp_app_returns_mcp_server():
     assert hasattr(app, "list_tools")
 
 
+def test_build_mcp_app_sets_instructions():
+    """Server-level `instructions` metadata reaches the MCP Server (it's
+    how we document the /upload + /download HTTP side-channels to clients)."""
+    specs = [{"name": "search", "description": "Search.",
+              "inputSchema": {"type": "object", "properties": {}}}]
+    dispatcher = make_method_dispatcher(_StubHandler(), ["search"])
+    note = "use GET /download?id=<id> for the full bundle"
+    app = build_mcp_app(server_name="x-test", tool_specs=specs,
+                        dispatcher=dispatcher, instructions=note)
+    assert app.instructions == note
+    # Default stays None when omitted.
+    app2 = build_mcp_app(server_name="x-test", tool_specs=specs,
+                         dispatcher=dispatcher)
+    assert app2.instructions is None
+
+
 # ----- serve_stdio / serve_streamable_http background-task contract --------
 
 async def _quick_bg() -> None:

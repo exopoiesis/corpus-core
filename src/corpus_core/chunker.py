@@ -26,6 +26,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Bumped to "2" when max_tokens default changed 12288 -> 4096 (2026-05-02
+# perf rebalance).  Any index built with version "1" (or no version field)
+# will be detected as stale by _classify_papers and force a full rebuild.
+# Increment this string whenever chunker parameters change in a way that
+# would produce different chunk boundaries for the same input markdown.
+CHUNKER_VERSION: str = "2"
+
 # Roughly 4 characters per token for English + inline LaTeX. Empirically:
 # - English prose ≈ 4 chars/token (BPE tokenizers)
 # - LaTeX-heavy math ≈ 3 chars/token (more symbols → more tokens)
