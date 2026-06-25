@@ -60,8 +60,8 @@ def test_no_host_project_imports():
 
     # Force-load every corpus_core submodule.
     import corpus_core  # noqa: F401
-    from corpus_core import (chunker, corpus_index, embeddings, jobs,
-                             mcp_scaffold, proxy, reranker, search)
+    from corpus_core import (chunker, corpus_index, embeddings, jobs,  # noqa: F401
+                             mcp_scaffold, proxy, reranker, search)  # noqa: F401
 
     leaked = [name for name in sys.modules
               if name.startswith("arxiv_radar_mcp")

@@ -14,10 +14,9 @@ import logging
 import os
 import socket
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 from corpus_core.corpus_index import _persist_index, load_chunk_texts
 from corpus_core.embeddings import EmbeddingIndex

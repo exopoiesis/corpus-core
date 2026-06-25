@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import socket
 
-import pytest
 
 from corpus_core import proxy
 
@@ -124,7 +123,7 @@ def test_run_proxy_errors_when_tunnel_fails_to_open(monkeypatch):
 # ----- _bridge_loop reconnect logic ------------------------------------------
 
 
-import anyio
+import anyio  # noqa: E402
 
 
 class _FakeStream:

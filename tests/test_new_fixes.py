@@ -14,7 +14,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from corpus_core.archive import _is_within, build_paper_archive, is_safe_paper_id
 from corpus_core.chunker import CHUNKER_VERSION
@@ -147,7 +146,6 @@ def test_chunker_version_mismatch_forces_full_rebuild(tmp_path: Path):
 
     # Tamper with the on-disk chunker_version.
     payload = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
-    old_version = payload.get("chunker_version")
     payload["chunker_version"] = "STALE_VERSION_XYZ"
     (tmp_path / "index.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
@@ -255,7 +253,6 @@ def test_is_safe_paper_id_accepts_normal_ids():
 def test_build_paper_archive_root_dir_blocks_escape(tmp_path: Path):
     """When root_dir is provided and markdown_path resolves outside it,
     build_paper_archive must return None (refuse to read)."""
-    import os
 
     sources = tmp_path / "sources"
     sources.mkdir()

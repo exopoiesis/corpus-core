@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from corpus_core.jobs import Job, JobError, JobHandle, JobRegistry
+from corpus_core.jobs import Job, JobError, JobRegistry
 
 
 def _await_done(registry: JobRegistry, job_id: str, timeout: float = 5.0) -> dict:

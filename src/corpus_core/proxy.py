@@ -21,7 +21,6 @@ import logging
 import shutil
 import socket
 import subprocess
-import sys
 import time
 
 import anyio

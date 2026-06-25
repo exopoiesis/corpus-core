@@ -1,7 +1,6 @@
 """Tests for chunker.py — markdown → chunk list."""
 from __future__ import annotations
 
-import pytest
 
 from corpus_core.chunker import (Chunk, chunk_markdown, estimate_tokens,
                                      split_by_headings, split_long_section)

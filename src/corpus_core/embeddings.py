@@ -143,9 +143,8 @@ class EmbeddingIndex:
         # Strip core fields; everything else is metadata (forward-compat).
         core = {"row_for", "model", "dims", "n"}
         metadata = {k: v for k, v in idx.items() if k not in core}
-        # chunker_version lives in metadata but expose at top level for
-        # fast mismatch checks in _classify_papers.
-        chunker_version: str | None = (metadata or {}).get("chunker_version")
+        # chunker_version (if present) stays inside metadata; _classify_papers
+        # reads it directly from the on-disk index.json payload.
         return cls(
             matrix=matrix,
             row_for=idx["row_for"],
@@ -297,7 +296,7 @@ class Encoder:
             # CPU path stays fp32 — bf16 on CPU is much slower than fp32.
             if torch.cuda.is_available():
                 model = model.to(dtype=torch.bfloat16)
-                LOG.info(f"  cast to bfloat16 on cuda")
+                LOG.info("  cast to bfloat16 on cuda")
             # Publish only after fully initialized so other threads see a
             # consistent state.
             self._model = model
