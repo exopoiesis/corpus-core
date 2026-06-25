@@ -10,22 +10,25 @@ What's inside:
 
 | Module | Role |
 |--------|------|
-| `embeddings.py` | `Encoder` — lazy SentenceTransformer wrapper with model-aware query/passage prefixes, bf16 on CUDA, matryoshka truncation. `Encoder.unload()` drops the in-process model + frees CUDA VRAM (idempotent; next encode lazily re-loads). `EmbeddingIndex` — mmap'd float32 matrix + `row_for` mapping + metadata, atomic save/load. |
-| `chunker.py` | `chunk_markdown(text, max_tokens) → list[Chunk]`. Section-aware split + paragraph overlap; rough but fast token estimator. |
-| `corpus_index.py` | Chunk-level corpus search. `reindex(parse_dir, encoder, *, incremental)` — incremental encode + atomic swap. `search_paper_text` / `search_paper_semantic` / `similar_to_paper`. `is_junk_section` filter. |
-| `search.py` | Abstract-level search primitives over `EmbeddingIndex`: `search_text` / `search_semantic` / `similar_to`. Paper-shaped records via `Protocol` — no host-project dep. |
-| `jobs.py` | `JobRegistry` — ThreadPoolExecutor + persistent `jobs/<id>.json`. Disk-truth fallback in `get()` so a stuck-running cell doesn't lie about completed jobs. |
-| `proxy.py` | Local stdio↔remote-HTTP bridge. `run_proxy(target, port, ssh_binary)` opens an SSH tunnel and forwards MCP traffic; `_bridge_loop` reconnects on backend disconnect. |
-| `reranker.py` | `Reranker` — lazy CrossEncoder wrapper for hybrid-search re-scoring. `Reranker.unload()` mirrors `Encoder.unload()` for symmetric VRAM control after a batch. Local `RerankerConfig` dataclass. |
-| `mcp_scaffold.py` | Generic MCP server scaffold: `make_method_dispatcher(handler, allowlist) → Dispatcher`, `build_mcp_app(server_name, tool_specs, dispatcher) → mcp.server.Server`, `serve_stdio` / `serve_streamable_http` transports with optional `BackgroundTaskFactory` list. |
-| `http_fetch.py` | `fetch_url(url, dest_path) → FetchResult` — throttled GET with 429/503 retry + `Retry-After` + atomic file write. `fetch_arxiv_pdf(arxiv_id, dest_dir)` convenience wrapper. **`get_arxiv_throttle()` singleton** — process-wide 1 req / 3 sec budget shared by arxiv-radar's HTML/LaTeX fetcher and lab-corpus's `ingest_url` / `ingest_arxiv_pdf`, so the combined image never double-spams arxiv.org. |
+| `embeddings.py` | `Encoder` -- lazy SentenceTransformer wrapper with model-aware query/passage prefixes, bf16 on CUDA, matryoshka truncation. `Encoder.unload()` drops the in-process model + frees CUDA VRAM (idempotent; next encode lazily re-loads). `EmbeddingIndex` -- mmap'd float32 matrix + `row_for` mapping + metadata, atomic save/load. |
+| `chunker.py` | `chunk_markdown(text, max_tokens) -> list[Chunk]`. Section-aware split + paragraph overlap; rough but fast token estimator. |
+| `corpus_index.py` | Chunk-level corpus search. `reindex(parse_dir, encoder, *, incremental)` -- incremental encode + atomic swap. `search_paper_text` / `search_paper_semantic` / `similar_to_paper`. `is_junk_section` filter. |
+| `search.py` | Abstract-level search primitives over `EmbeddingIndex`: `search_text` / `search_semantic` / `similar_to`. Paper-shaped records via `Protocol` -- no host-project dep. |
+| `jobs.py` | `JobRegistry` -- ThreadPoolExecutor + persistent `jobs/<id>.json`. Disk-truth fallback in `get()` so a stuck-running cell doesn't lie about completed jobs. |
+| `proxy.py` | Local stdio<->remote-HTTP bridge. `run_proxy(target, port, ssh_binary)` opens an SSH tunnel and forwards MCP traffic; `_bridge_loop` reconnects on backend disconnect. |
+| `reranker.py` | `Reranker` -- lazy CrossEncoder wrapper for hybrid-search re-scoring. `Reranker.unload()` mirrors `Encoder.unload()` for symmetric VRAM control after a batch. Local `RerankerConfig` dataclass. |
+| `mcp_scaffold.py` | Generic MCP server scaffold: `make_method_dispatcher(handler, allowlist) -> Dispatcher`, `build_mcp_app(server_name, tool_specs, dispatcher) -> mcp.server.Server`, `serve_stdio` / `serve_streamable_http` transports with optional `BackgroundTaskFactory` list. |
+| `http_fetch.py` | `fetch_url(url, dest_path) -> FetchResult` -- throttled GET with 429/503 retry + `Retry-After` + atomic file write. `fetch_arxiv_pdf(arxiv_id, dest_dir)` convenience wrapper. **`get_arxiv_throttle()` singleton** -- process-wide 1 req / 3 sec budget shared by arxiv-radar's HTML/LaTeX fetcher and lab-corpus's `ingest_url` / `ingest_arxiv_pdf`, so the combined image never double-spams arxiv.org. |
+| `pdf.py` | **Optional extra `corpus-core[pdf]`.** MinerU parse mechanics shared by both downstream servers. `parse_pdf(pdf_path, *, media_out_dir, backend, runner) -> PdfParseResult` -- parse one PDF via MinerU, write images to `media_out_dir`. `is_pdf_parser_available() -> bool` -- lazy import probe (safe to call without MinerU). `looks_like_pdf_stub(markdown) -> bool` -- heuristic for scan-only / failed parses. `unload_pdf_models() -> bool` -- release MinerU VRAM singletons (idempotent). Lazy MinerU import: importing `corpus_core.pdf` is cheap on hosts without the extra. |
 
 ## Install
 
 ```bash
 pip install corpus-core            # once published to PyPI
+pip install corpus-core[pdf]       # + MinerU PDF parsing (~2 GB, mineru[core]>=2.5)
 # or, during dev:
 pip install -e ../corpus-core
+pip install -e "../corpus-core[pdf]"   # dev with PDF extra
 ```
 
 ## Quick start
